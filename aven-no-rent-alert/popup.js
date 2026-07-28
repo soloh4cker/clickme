@@ -1,32 +1,370 @@
 (() => {
   'use strict';
-  const KEY = 'noRentGuests';
+
+  const STORAGE_KEY = 'noRentGuests';
   const $ = id => document.getElementById(id);
-  const el = {form:$('guestForm'),editId:$('editId'),first:$('firstName'),last:$('lastName'),reason:$('reason'),conf:$('confirmationNumber'),save:$('saveButton'),cancel:$('cancelEdit'),title:$('formTitle'),search:$('search'),list:$('list'),count:$('count'),empty:$('empty'),export:$('exportButton'),import:$('importButton'),file:$('importFile'),status:$('status')};
-  let guests=[];
-  const clean=v=>String(v??'').replace(/\s+/g,' ').trim();
-  const norm=v=>clean(v).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
-  const makeId=()=>crypto.randomUUID?crypto.randomUUID():`g-${Date.now()}-${Math.random()}`;
+  const elements = {
+    form: $('guestForm'),
+    editId: $('editId'),
+    first: $('firstName'),
+    last: $('lastName'),
+    reason: $('reason'),
+    confirmation: $('confirmationNumber'),
+    save: $('saveButton'),
+    cancel: $('cancelEdit'),
+    title: $('formTitle'),
+    search: $('search'),
+    list: $('list'),
+    count: $('count'),
+    empty: $('empty'),
+    exportButton: $('exportButton'),
+    importButton: $('importButton'),
+    importFile: $('importFile'),
+    status: $('status'),
+    pageDomain: $('pageDomain'),
+    detectedGuest: $('detectedGuest'),
+    matchResult: $('matchResult'),
+    checkPage: $('checkPage'),
+    diagnosticHelp: $('diagnosticHelp')
+  };
 
-  function message(text,type=''){el.status.textContent=text;el.status.className=`status ${type}`;clearTimeout(message.t);message.t=setTimeout(()=>{el.status.textContent='';el.status.className='status'},3000)}
-  function sort(){guests.sort((a,b)=>clean(a.lastName).localeCompare(clean(b.lastName),undefined,{sensitivity:'base'})||clean(a.firstName).localeCompare(clean(b.firstName),undefined,{sensitivity:'base'}))}
-  async function persist(text){await chrome.storage.local.set({[KEY]:guests});render();if(text)message(text,'success')}
-  function reset(){el.form.reset();el.editId.value='';el.title.textContent='Add guest';el.save.textContent='Add to no-rent list';el.cancel.classList.add('hidden')}
-  function edit(g){el.editId.value=g.id;el.first.value=g.firstName;el.last.value=g.lastName;el.reason.value=g.reason||'';el.conf.value=g.confirmationNumber||'';el.title.textContent='Edit guest';el.save.textContent='Save changes';el.cancel.classList.remove('hidden');document.documentElement.scrollTop=0}
-  function button(text,classes,fn){const b=document.createElement('button');b.type='button';b.textContent=text;b.className=classes;b.addEventListener('click',fn);return b}
+  let guests = [];
 
-  function render(){
-    const q=norm(el.search.value); const filtered=guests.filter(g=>!q||[g.firstName,g.lastName,g.reason,g.confirmationNumber].some(v=>norm(v).includes(q)));
-    el.list.replaceChildren();el.count.textContent=guests.length;el.empty.classList.toggle('hidden',filtered.length>0);el.empty.textContent=guests.length&&filtered.length===0?'No saved guest matches your search.':'No guests have been added yet.';
-    for(const g of filtered){
-      const card=document.createElement('article');card.className='card';const head=document.createElement('div');head.className='card-head';const name=document.createElement('p');name.className='name';name.textContent=`${clean(g.lastName)}, ${clean(g.firstName)}`;const actions=document.createElement('div');actions.className='actions';actions.append(button('Edit','small',()=>edit(g)),button('Delete','small delete',async()=>{if(confirm(`Remove ${g.firstName} ${g.lastName} from the no-rent list?`)){guests=guests.filter(x=>x.id!==g.id);if(el.editId.value===g.id)reset();await persist('Guest removed.')}}));head.append(name,actions);const details=document.createElement('p');details.className='details';details.textContent=`Reason: ${clean(g.reason)||'Not provided'}\nConfirmation #: ${clean(g.confirmationNumber)||'Not provided'}`;details.style.whiteSpace='pre-line';card.append(head,details);el.list.append(card)
+  const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+  const normalize = value => clean(value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase();
+  const makeId = () => crypto.randomUUID
+    ? crypto.randomUUID()
+    : `g-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  function showMessage(text, type = '') {
+    elements.status.textContent = text;
+    elements.status.className = `status ${type}`.trim();
+    clearTimeout(showMessage.timer);
+    showMessage.timer = setTimeout(() => {
+      elements.status.textContent = '';
+      elements.status.className = 'status';
+    }, 3500);
+  }
+
+  function sortGuests() {
+    guests.sort((a, b) =>
+      clean(a.lastName).localeCompare(clean(b.lastName), undefined, { sensitivity: 'base' }) ||
+      clean(a.firstName).localeCompare(clean(b.firstName), undefined, { sensitivity: 'base' })
+    );
+  }
+
+  async function persist(successText) {
+    try {
+      await chrome.storage.local.set({ [STORAGE_KEY]: guests });
+      render();
+      if (successText) showMessage(successText, 'success');
+      await checkCurrentPage(false);
+    } catch (error) {
+      console.error(error);
+      showMessage('Could not save the list.', 'error');
     }
   }
 
-  el.form.addEventListener('submit',async e=>{e.preventDefault();const first=clean(el.first.value),last=clean(el.last.value),reason=clean(el.reason.value),confirmationNumber=clean(el.conf.value),id=el.editId.value;if(!first||!last)return message('First and last name are required.','error');const now=new Date().toISOString();if(id){const i=guests.findIndex(g=>g.id===id);if(i<0)return message('Entry not found.','error');guests[i]={...guests[i],firstName:first,lastName:last,reason,confirmationNumber,updatedAt:now};sort();await persist('Changes saved.')}else{const duplicate=guests.some(g=>norm(g.firstName)===norm(first)&&norm(g.lastName)===norm(last));if(duplicate&&!confirm('A guest with the same name already exists. Add another entry anyway?'))return;guests.push({id:makeId(),firstName:first,lastName:last,reason,confirmationNumber,createdAt:now,updatedAt:now});sort();await persist('Guest added.')}reset()});
-  el.cancel.addEventListener('click',reset);el.search.addEventListener('input',render);
-  el.export.addEventListener('click',()=>{const blob=new Blob([JSON.stringify({format:'aven-no-rent-backup',version:1,exportedAt:new Date().toISOString(),guests},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`aven-no-rent-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)});
-  el.import.addEventListener('click',()=>{el.file.value='';el.file.click()});
-  el.file.addEventListener('change',async()=>{try{const f=el.file.files?.[0];if(!f)return;const p=JSON.parse(await f.text()),arr=Array.isArray(p)?p:p.guests;if(!Array.isArray(arr))throw Error('No guest list found.');const cleaned=arr.map(g=>({id:clean(g.id)||makeId(),firstName:clean(g.firstName),lastName:clean(g.lastName),reason:clean(g.reason),confirmationNumber:clean(g.confirmationNumber),createdAt:clean(g.createdAt)||new Date().toISOString(),updatedAt:new Date().toISOString()})).filter(g=>g.firstName&&g.lastName);if(!confirm(`Import ${cleaned.length} guest(s)? This replaces the current list.`))return;guests=cleaned;sort();await persist('Backup imported.');reset()}catch(err){message(err.message||'Import failed.','error')}});
-  chrome.storage.local.get(KEY).then(r=>{guests=Array.isArray(r[KEY])?r[KEY]:[];sort();render()}).catch(()=>message('Could not load saved list.','error'));
+  function resetForm() {
+    elements.form.reset();
+    elements.editId.value = '';
+    elements.title.textContent = 'Add guest';
+    elements.save.textContent = 'Add to no-rent list';
+    elements.cancel.classList.add('hidden');
+  }
+
+  function beginEdit(guest) {
+    elements.editId.value = guest.id;
+    elements.first.value = clean(guest.firstName);
+    elements.last.value = clean(guest.lastName);
+    elements.reason.value = clean(guest.reason);
+    elements.confirmation.value = clean(guest.confirmationNumber);
+    elements.title.textContent = 'Edit guest';
+    elements.save.textContent = 'Save changes';
+    elements.cancel.classList.remove('hidden');
+    document.documentElement.scrollTop = 0;
+  }
+
+  function createButton(text, className, handler) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = text;
+    button.className = className;
+    button.addEventListener('click', handler);
+    return button;
+  }
+
+  function render() {
+    const query = normalize(elements.search.value);
+    const filtered = guests.filter(guest =>
+      !query || [
+        guest.firstName,
+        guest.lastName,
+        guest.reason,
+        guest.confirmationNumber
+      ].some(value => normalize(value).includes(query))
+    );
+
+    elements.list.replaceChildren();
+    elements.count.textContent = String(guests.length);
+    elements.empty.classList.toggle('hidden', filtered.length > 0);
+    elements.empty.textContent = guests.length && filtered.length === 0
+      ? 'No saved guest matches your search.'
+      : 'No guests have been added yet.';
+
+    for (const guest of filtered) {
+      const card = document.createElement('article');
+      card.className = 'card';
+
+      const header = document.createElement('div');
+      header.className = 'card-head';
+
+      const name = document.createElement('p');
+      name.className = 'name';
+      name.textContent = `${clean(guest.lastName)}, ${clean(guest.firstName)}`;
+
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      actions.append(
+        createButton('Edit', 'small', () => beginEdit(guest)),
+        createButton('Delete', 'small delete', async () => {
+          if (!confirm(`Remove ${guest.firstName} ${guest.lastName} from the no-rent list?`)) return;
+          guests = guests.filter(item => item.id !== guest.id);
+          if (elements.editId.value === guest.id) resetForm();
+          await persist('Guest removed.');
+        })
+      );
+
+      header.append(name, actions);
+
+      const details = document.createElement('p');
+      details.className = 'details';
+      details.textContent =
+        `Reason: ${clean(guest.reason) || 'Not provided'}\n` +
+        `Confirmation #: ${clean(guest.confirmationNumber) || 'Not provided'}`;
+      details.style.whiteSpace = 'pre-line';
+
+      card.append(header, details);
+      elements.list.append(card);
+    }
+  }
+
+  async function sendDiagnostic(tabId) {
+    try {
+      return await chrome.tabs.sendMessage(
+        tabId,
+        { type: 'aven-diagnostic' },
+        { frameId: 0 }
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  async function injectDetector(tabId) {
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId, allFrames: true },
+        files: ['content.css']
+      });
+    } catch {
+      // CSS may already be present or a particular frame may not allow injection.
+    }
+
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        files: ['content.js']
+      });
+      return true;
+    } catch (error) {
+      console.error('Detector injection failed:', error);
+      return false;
+    }
+  }
+
+  async function checkCurrentPage(showCheckingText = true) {
+    if (showCheckingText) {
+      elements.pageDomain.textContent = 'Checking the current tab...';
+      elements.detectedGuest.textContent = '';
+      elements.matchResult.textContent = '';
+      elements.diagnosticHelp.textContent = '';
+    }
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) throw new Error('No active Chrome tab was found.');
+
+      let host = 'Unknown page';
+      try {
+        host = new URL(tab.url).host || tab.url;
+      } catch {
+        host = tab.url || 'Unknown page';
+      }
+      elements.pageDomain.textContent = `Current page: ${host}`;
+
+      let result = await sendDiagnostic(tab.id);
+      if (!result?.loaded) {
+        const injected = await injectDetector(tab.id);
+        if (injected) {
+          await new Promise(resolve => setTimeout(resolve, 600));
+          result = await sendDiagnostic(tab.id);
+        }
+      }
+
+      if (!result?.loaded) {
+        elements.detectedGuest.textContent = 'Detector status: Not running on this tab';
+        elements.matchResult.textContent = '';
+        elements.diagnosticHelp.textContent =
+          'Reload the Aven tab, then check again. If it still fails, the Aven website domain is not in the extension permission list.';
+        return;
+      }
+
+      elements.detectedGuest.textContent = result.guestName
+        ? `Detected Aven guest: ${result.guestName}`
+        : 'Detector is running, but no guest-name element is currently visible.';
+
+      if (!result.guestName) {
+        elements.matchResult.textContent = `Saved no-rent records in this Windows/Chrome profile: ${result.savedGuestCount}`;
+        elements.diagnosticHelp.textContent =
+          'Open a reservation so the guest profile is visible, then click “Check current page again.”';
+      } else if (result.matchCount > 0) {
+        elements.matchResult.textContent = `Match result: ${result.matchCount} no-rent match${result.matchCount === 1 ? '' : 'es'} found`;
+        elements.diagnosticHelp.textContent =
+          'A red warning should be visible on the Aven page. Close this extension popup to view it.';
+      } else {
+        elements.matchResult.textContent = 'Match result: No saved record matched this detected name';
+        elements.diagnosticHelp.textContent =
+          'Check the saved first and last names below. Name order and capitalization do not matter.';
+      }
+    } catch (error) {
+      console.error(error);
+      elements.pageDomain.textContent = 'Could not test the current page.';
+      elements.detectedGuest.textContent = '';
+      elements.matchResult.textContent = '';
+      elements.diagnosticHelp.textContent = error.message || 'Unknown diagnostic error.';
+    }
+  }
+
+  elements.form.addEventListener('submit', async event => {
+    event.preventDefault();
+
+    const firstName = clean(elements.first.value);
+    const lastName = clean(elements.last.value);
+    const reason = clean(elements.reason.value);
+    const confirmationNumber = clean(elements.confirmation.value);
+    const id = elements.editId.value;
+
+    if (!firstName || !lastName) {
+      showMessage('First and last name are required.', 'error');
+      return;
+    }
+
+    const now = new Date().toISOString();
+
+    if (id) {
+      const index = guests.findIndex(guest => guest.id === id);
+      if (index < 0) {
+        showMessage('Entry not found.', 'error');
+        return;
+      }
+      guests[index] = {
+        ...guests[index],
+        firstName,
+        lastName,
+        reason,
+        confirmationNumber,
+        updatedAt: now
+      };
+      sortGuests();
+      await persist('Changes saved.');
+    } else {
+      const duplicate = guests.some(guest =>
+        normalize(guest.firstName) === normalize(firstName) &&
+        normalize(guest.lastName) === normalize(lastName)
+      );
+      if (duplicate && !confirm('A guest with the same name already exists. Add another entry anyway?')) {
+        return;
+      }
+      guests.push({
+        id: makeId(),
+        firstName,
+        lastName,
+        reason,
+        confirmationNumber,
+        createdAt: now,
+        updatedAt: now
+      });
+      sortGuests();
+      await persist('Guest added.');
+    }
+
+    resetForm();
+  });
+
+  elements.cancel.addEventListener('click', resetForm);
+  elements.search.addEventListener('input', render);
+  elements.checkPage.addEventListener('click', () => checkCurrentPage(true));
+
+  elements.exportButton.addEventListener('click', () => {
+    const blob = new Blob([
+      JSON.stringify({
+        format: 'aven-no-rent-backup',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        guests
+      }, null, 2)
+    ], { type: 'application/json' });
+
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `aven-no-rent-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  elements.importButton.addEventListener('click', () => {
+    elements.importFile.value = '';
+    elements.importFile.click();
+  });
+
+  elements.importFile.addEventListener('change', async () => {
+    try {
+      const file = elements.importFile.files?.[0];
+      if (!file) return;
+
+      const parsed = JSON.parse(await file.text());
+      const imported = Array.isArray(parsed) ? parsed : parsed.guests;
+      if (!Array.isArray(imported)) throw new Error('No guest list found.');
+
+      const cleaned = imported.map(guest => ({
+        id: clean(guest.id) || makeId(),
+        firstName: clean(guest.firstName),
+        lastName: clean(guest.lastName),
+        reason: clean(guest.reason),
+        confirmationNumber: clean(guest.confirmationNumber),
+        createdAt: clean(guest.createdAt) || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      })).filter(guest => guest.firstName && guest.lastName);
+
+      if (!confirm(`Import ${cleaned.length} guest(s)? This replaces the current list.`)) return;
+      guests = cleaned;
+      sortGuests();
+      await persist('Backup imported.');
+      resetForm();
+    } catch (error) {
+      showMessage(error.message || 'Import failed.', 'error');
+    }
+  });
+
+  chrome.storage.local.get(STORAGE_KEY).then(result => {
+    guests = Array.isArray(result[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
+    sortGuests();
+    render();
+    checkCurrentPage(true);
+  }).catch(() => showMessage('Could not load saved list.', 'error'));
 })();
