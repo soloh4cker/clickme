@@ -22,7 +22,7 @@
         "https://*.synxis.com/*",
         "https://*.avenhospitality.com/*"
       ],
-      "js": ["content.js"],
+      "js": ["shared-sync.js", "content.js"],
       "css": ["content.css"],
       "all_frames": true,
       "match_about_blank": true,
