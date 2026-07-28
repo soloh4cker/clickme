@@ -1,27 +1,353 @@
 (() => {
   'use strict';
-  const KEY='noRentGuests';
-  const SELECTOR='.primary-guest-info__label-ellipsis';
-  const ROOT='aven-no-rent-alert-root';
-  const titles=new Set(['mr','mrs','ms','miss','dr','prof','sir','madam']);
-  let guests=[],currentGuest='',dismissed='',timer=0;
-  const clean=v=>String(v??'').replace(/\s+/g,' ').trim();
-  const norm=v=>clean(v).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/['’`]/g,'').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
-  const tokens=(v,removeTitles=false)=>{const a=norm(v).split(' ').filter(Boolean);return removeTitles?a.filter(x=>!titles.has(x)):a};
-  function containsAll(haystack,needles){const counts=new Map();haystack.forEach(x=>counts.set(x,(counts.get(x)||0)+1));for(const x of needles){const n=counts.get(x)||0;if(!n)return false;counts.set(x,n-1)}return true}
-  function matches(name,g){const first=tokens(g.firstName),last=tokens(g.lastName);return first.length&&last.length&&containsAll(tokens(name,true),[...first,...last])}
-  function visible(e){if(!(e instanceof Element))return false;const s=getComputedStyle(e),r=e.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0}
-  function displayedName(){const all=[...document.querySelectorAll(SELECTOR)],use=all.filter(visible);for(const e of(use.length?use:all)){const t=clean(e.textContent);if(t)return t}return''}
-  function remove(){document.getElementById(ROOT)?.remove()}
-  function node(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
-  function signature(name,list){return norm(name)+'::'+list.map(g=>[g.id,norm(g.firstName),norm(g.lastName),norm(g.reason),norm(g.confirmationNumber)].join(':')).sort().join('|')}
-  function row(parent,label,value){const r=node('div','nr-row'),l=node('div','nr-label',label),v=node('div','nr-value',clean(value)||'Not provided');r.append(l,v);parent.append(r)}
-  async function copy(value,button){const old=button.textContent;try{await navigator.clipboard.writeText(value);button.textContent='Copied'}catch{const t=document.createElement('textarea');t.value=value;t.style.position='fixed';t.style.opacity='0';document.body.append(t);t.select();document.execCommand('copy');t.remove();button.textContent='Copied'}setTimeout(()=>{if(button.isConnected)button.textContent=old},1400)}
-  function show(name,list,sig){remove();const root=node('div');root.id=ROOT;root.dataset.signature=sig;root.setAttribute('role','alertdialog');const card=node('section','nr-card'),head=node('header','nr-head'),icon=node('div','nr-icon','!'),wrap=node('div','nr-titlewrap'),title=node('h2','nr-title','NO-RENT LIST MATCH'),sub=node('p','nr-sub',`${list.length} matching restricted-guest record${list.length===1?'':'s'} found`),close=node('button','nr-close','×');close.type='button';close.setAttribute('aria-label','Close no-rent warning');close.addEventListener('click',()=>{dismissed=sig;remove()});wrap.append(title,sub);head.append(icon,wrap,close);const body=node('div','nr-body'),current=node('p','nr-current');const strong=node('strong','', 'Guest shown in Aven: ');current.append(strong,document.createTextNode(name));body.append(current);for(const g of list){const m=node('article','nr-match'),n=node('p','nr-name',`${clean(g.lastName)}, ${clean(g.firstName)}`);m.append(n);row(m,'Reason',g.reason);row(m,'Past confirmation #',g.confirmationNumber);if(clean(g.confirmationNumber)){const b=node('button','nr-copy','Copy confirmation #');b.type='button';b.addEventListener('click',()=>copy(g.confirmationNumber,b));m.append(b)}body.append(m)}body.append(node('p','nr-footer','Please review the past reservation before proceeding.'));card.append(head,body);root.append(card);document.documentElement.append(root)}
-  function scan(){const name=displayedName(),key=norm(name);if(key!==currentGuest){currentGuest=key;dismissed='';remove()}if(!name)return remove();const list=guests.filter(g=>matches(name,g));if(!list.length)return remove();const sig=signature(name,list);if(sig===dismissed)return;const existing=document.getElementById(ROOT);if(!existing||existing.dataset.signature!==sig)show(name,list,sig)}
-  function schedule(){clearTimeout(timer);timer=setTimeout(scan,180)}
-  new MutationObserver(schedule).observe(document.documentElement,{childList:true,subtree:true,characterData:true});
-  chrome.storage.onChanged.addListener((changes,area)=>{if(area==='local'&&changes[KEY]){guests=Array.isArray(changes[KEY].newValue)?changes[KEY].newValue:[];dismissed='';schedule()}});
-  chrome.storage.local.get(KEY).then(r=>{guests=Array.isArray(r[KEY])?r[KEY]:[];scan()}).catch(console.error);
-  setInterval(schedule,2000);
+
+  if (globalThis.__avenNoRentAlertLoaded) return;
+  globalThis.__avenNoRentAlertLoaded = true;
+
+  const STORAGE_KEY = 'noRentGuests';
+  const ALERT_ROOT_ID = 'aven-no-rent-alert-root';
+  const IS_TOP_FRAME = window.top === window;
+  const SELECTORS = [
+    '#gsr-profile h4.primary-guest-info__label-ellipsis',
+    '#gsr-profile > div > div > section > div > h4',
+    'h4.primary-guest-info__label-ellipsis',
+    '.primary-guest-info__label-ellipsis'
+  ];
+  const TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'sir', 'madam']);
+
+  let noRentGuests = [];
+  let lastLocalGuestName = null;
+  let lastReportTime = 0;
+  let scanTimer = 0;
+
+  const frameGuests = new Map();
+  let currentGuestKey = '';
+  let dismissedSignature = '';
+
+  const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+
+  const normalize = value => clean(value)
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase()
+    .replace(/['’`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  function tokenize(value, removeTitles = false) {
+    const parts = normalize(value).split(' ').filter(Boolean);
+    return removeTitles ? parts.filter(token => !TITLES.has(token)) : parts;
+  }
+
+  function containsAllTokens(availableTokens, requiredTokens) {
+    const counts = new Map();
+    for (const token of availableTokens) {
+      counts.set(token, (counts.get(token) || 0) + 1);
+    }
+    for (const token of requiredTokens) {
+      const count = counts.get(token) || 0;
+      if (count < 1) return false;
+      counts.set(token, count - 1);
+    }
+    return true;
+  }
+
+  function matchesEntry(guestName, entry) {
+    const first = tokenize(entry.firstName);
+    const last = tokenize(entry.lastName);
+    if (!first.length || !last.length) return false;
+    return containsAllTokens(tokenize(guestName, true), [...first, ...last]);
+  }
+
+  function isVisible(element) {
+    if (!(element instanceof Element)) return false;
+    const style = getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function findDisplayedGuestName() {
+    const found = [];
+    const seen = new Set();
+
+    for (const selector of SELECTORS) {
+      for (const element of document.querySelectorAll(selector)) {
+        if (seen.has(element)) continue;
+        seen.add(element);
+        found.push(element);
+      }
+    }
+
+    const visible = found.filter(isVisible);
+    for (const element of visible.length ? visible : found) {
+      const text = clean(element.textContent);
+      if (text) return text;
+    }
+    return '';
+  }
+
+  function createElement(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+  }
+
+  function removeAlert() {
+    document.getElementById(ALERT_ROOT_ID)?.remove();
+  }
+
+  function makeSignature(guestName, matches) {
+    const matchParts = matches.map(entry => [
+      clean(entry.id),
+      normalize(entry.firstName),
+      normalize(entry.lastName),
+      normalize(entry.reason),
+      normalize(entry.confirmationNumber)
+    ].join(':')).sort();
+    return `${normalize(guestName)}::${matchParts.join('|')}`;
+  }
+
+  function addDetailRow(parent, label, value) {
+    const row = createElement('div', 'nr-row');
+    row.append(
+      createElement('div', 'nr-label', label),
+      createElement('div', 'nr-value', clean(value) || 'Not provided')
+    );
+    parent.append(row);
+  }
+
+  async function copyText(value, button) {
+    const text = clean(value);
+    if (!text) return;
+    const original = button.textContent;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      button.textContent = 'Copied';
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.append(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        button.textContent = 'Copied';
+      } catch {
+        button.textContent = 'Copy failed';
+      }
+      textarea.remove();
+    }
+
+    setTimeout(() => {
+      if (button.isConnected) button.textContent = original;
+    }, 1400);
+  }
+
+  function showAlert(guestName, matches, signature) {
+    removeAlert();
+
+    const root = createElement('div');
+    root.id = ALERT_ROOT_ID;
+    root.dataset.signature = signature;
+    root.setAttribute('role', 'alertdialog');
+    root.setAttribute('aria-label', 'No-rent list match');
+
+    const card = createElement('section', 'nr-card');
+    const header = createElement('header', 'nr-head');
+    const icon = createElement('div', 'nr-icon', '!');
+    const titleWrap = createElement('div', 'nr-titlewrap');
+    titleWrap.append(
+      createElement('h2', 'nr-title', 'NO-RENT LIST MATCH'),
+      createElement(
+        'p',
+        'nr-sub',
+        `${matches.length} matching restricted-guest record${matches.length === 1 ? '' : 's'} found`
+      )
+    );
+
+    const closeButton = createElement('button', 'nr-close', '×');
+    closeButton.type = 'button';
+    closeButton.setAttribute('aria-label', 'Close no-rent warning');
+    closeButton.addEventListener('click', () => {
+      dismissedSignature = signature;
+      removeAlert();
+    });
+
+    header.append(icon, titleWrap, closeButton);
+
+    const body = createElement('div', 'nr-body');
+    const currentGuest = createElement('p', 'nr-current');
+    currentGuest.append(
+      createElement('strong', '', 'Guest shown in Aven: '),
+      document.createTextNode(guestName)
+    );
+    body.append(currentGuest);
+
+    for (const entry of matches) {
+      const matchCard = createElement('article', 'nr-match');
+      matchCard.append(
+        createElement('p', 'nr-name', `${clean(entry.lastName)}, ${clean(entry.firstName)}`)
+      );
+      addDetailRow(matchCard, 'Reason', entry.reason);
+      addDetailRow(matchCard, 'Past confirmation #', entry.confirmationNumber);
+
+      if (clean(entry.confirmationNumber)) {
+        const copyButton = createElement('button', 'nr-copy', 'Copy confirmation #');
+        copyButton.type = 'button';
+        copyButton.addEventListener('click', () => copyText(entry.confirmationNumber, copyButton));
+        matchCard.append(copyButton);
+      }
+
+      body.append(matchCard);
+    }
+
+    body.append(
+      createElement('p', 'nr-footer', 'Please review the past reservation before proceeding.')
+    );
+    card.append(header, body);
+    root.append(card);
+    document.documentElement.append(root);
+  }
+
+  function removeExpiredFrameReports() {
+    const cutoff = Date.now() - 10000;
+    for (const [frameId, report] of frameGuests.entries()) {
+      if (report.updatedAt < cutoff) frameGuests.delete(frameId);
+    }
+  }
+
+  function getBestReportedGuest() {
+    removeExpiredFrameReports();
+
+    const topReport = frameGuests.get(0);
+    if (topReport?.guestName) return topReport.guestName;
+
+    let newest = null;
+    for (const report of frameGuests.values()) {
+      if (!report.guestName) continue;
+      if (!newest || report.updatedAt > newest.updatedAt) newest = report;
+    }
+    return newest?.guestName || '';
+  }
+
+  function evaluateTopFrame() {
+    if (!IS_TOP_FRAME) return;
+
+    const guestName = getBestReportedGuest();
+    const guestKey = normalize(guestName);
+
+    if (guestKey !== currentGuestKey) {
+      currentGuestKey = guestKey;
+      dismissedSignature = '';
+      removeAlert();
+    }
+
+    if (!guestName) {
+      removeAlert();
+      return;
+    }
+
+    const matches = noRentGuests.filter(entry => matchesEntry(guestName, entry));
+    if (!matches.length) {
+      removeAlert();
+      return;
+    }
+
+    const signature = makeSignature(guestName, matches);
+    if (signature === dismissedSignature) return;
+
+    const existing = document.getElementById(ALERT_ROOT_ID);
+    if (!existing || existing.dataset.signature !== signature) {
+      showAlert(guestName, matches, signature);
+    }
+  }
+
+  function reportLocalGuest(force = false) {
+    const guestName = findDisplayedGuestName();
+    const now = Date.now();
+    const changed = guestName !== lastLocalGuestName;
+
+    if (!changed && !force && now - lastReportTime < 4000) return;
+
+    lastLocalGuestName = guestName;
+    lastReportTime = now;
+
+    if (IS_TOP_FRAME) {
+      frameGuests.set(0, {
+        guestName,
+        frameUrl: location.href,
+        updatedAt: now
+      });
+      evaluateTopFrame();
+    }
+
+    chrome.runtime.sendMessage({
+      type: 'aven-frame-guest-update',
+      guestName
+    }).catch(() => {});
+  }
+
+  function scheduleScan() {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => reportLocalGuest(false), 180);
+  }
+
+  if (IS_TOP_FRAME) {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message?.type === 'aven-forwarded-guest-update') {
+        frameGuests.set(message.frameId, {
+          guestName: clean(message.guestName),
+          frameUrl: clean(message.frameUrl),
+          updatedAt: Date.now()
+        });
+        evaluateTopFrame();
+        return;
+      }
+
+      if (message?.type === 'aven-diagnostic') {
+        const guestName = getBestReportedGuest();
+        const matches = guestName
+          ? noRentGuests.filter(entry => matchesEntry(guestName, entry))
+          : [];
+
+        sendResponse({
+          loaded: true,
+          guestName,
+          matchCount: matches.length,
+          savedGuestCount: noRentGuests.length,
+          pageUrl: location.href,
+          frameReports: [...frameGuests.values()].filter(report => report.guestName).length,
+          selectors: SELECTORS
+        });
+      }
+    });
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== 'local' || !changes[STORAGE_KEY]) return;
+      noRentGuests = Array.isArray(changes[STORAGE_KEY].newValue)
+        ? changes[STORAGE_KEY].newValue
+        : [];
+      dismissedSignature = '';
+      evaluateTopFrame();
+    });
+
+    chrome.storage.local.get(STORAGE_KEY).then(result => {
+      noRentGuests = Array.isArray(result[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
+      evaluateTopFrame();
+    }).catch(error => console.error('Aven No-Rent Alert storage error:', error));
+  }
+
+  new MutationObserver(scheduleScan).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    characterData: true
+  });
+
+  reportLocalGuest(true);
+  setInterval(() => reportLocalGuest(true), 3000);
 })();
