@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Aven No-Rent Alert",
+  "version": "1.0.0",
+  "description": "Warns staff when the displayed Aven guest matches a locally managed no-rent list.",
+  "permissions": ["storage"],
+  "action": {
+    "default_title": "Aven No-Rent Alert",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.synxis.com/*",
+        "https://*.avenhospitality.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
