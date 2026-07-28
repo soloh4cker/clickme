@@ -16,6 +16,15 @@
   </header>
 
   <main>
+    <section class="panel diagnostic-panel">
+      <div class="title-row"><h2>Current Aven page test</h2></div>
+      <p id="pageDomain" class="diagnostic-line">Checking the current tab...</p>
+      <p id="detectedGuest" class="diagnostic-line"></p>
+      <p id="matchResult" class="diagnostic-line"></p>
+      <button id="checkPage" class="secondary-full" type="button">Check current page again</button>
+      <p id="diagnosticHelp" class="diagnostic-help"></p>
+    </section>
+
     <section class="panel">
       <div class="title-row">
         <h2 id="formTitle">Add guest</h2>
@@ -47,7 +56,7 @@
       <input id="importFile" type="file" accept="application/json,.json" hidden>
     </div>
     <p id="status" class="status"></p>
-    <p class="privacy">Stored only in this Chrome profile. No data is sent over the internet.</p>
+    <p class="privacy">Version 1.1 stores the list only in this Chrome profile. Separate Windows logins do not share this list.</p>
   </main>
 
   <script src="popup.js"></script>
