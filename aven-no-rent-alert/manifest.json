@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Aven No-Rent Alert",
-  "version": "1.2.0",
-  "description": "Warns staff when the displayed Aven guest matches a locally managed no-rent list.",
+  "version": "2.0.0",
+  "description": "Warns staff when the displayed Aven guest matches the hotel's shared no-rent list.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://*.synxis.com/*",
-    "https://*.avenhospitality.com/*"
+    "https://*.avenhospitality.com/*",
+    "http://127.0.0.1:17831/*"
   ],
   "background": {
     "service_worker": "background.js"
