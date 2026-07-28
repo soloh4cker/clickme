@@ -1,6 +1,4 @@
-param(
-    [int]$Port = 17831
-)
+param([int]$Port = 17831)
 
 $ErrorActionPreference = 'Stop'
 $ServiceVersion = '2.0.0'
@@ -11,19 +9,10 @@ $DataFile = Join-Path $DataDirectory 'no-rent-list.json'
 $LogFile = Join-Path $DataDirectory 'shared-service.log'
 $Prefix = "http://127.0.0.1:$Port/"
 
-function Write-Log {
-    param([string]$Message)
+function Write-Log([string]$Message) {
     try {
-        $line = "{0} {1}" -f (Get-Date).ToString('s'), $Message
-        Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
-    } catch {
-        # Logging must never stop the service.
-    }
-}
-
-function Ensure-Directories {
-    New-Item -ItemType Directory -Force -Path $DataDirectory | Out-Null
-    New-Item -ItemType Directory -Force -Path $BackupDirectory | Out-Null
+        Add-Content -LiteralPath $LogFile -Encoding UTF8 -Value ("{0} {1}" -f (Get-Date).ToString('s'), $Message)
+    } catch {}
 }
 
 function New-EmptyState {
@@ -34,38 +23,24 @@ function New-EmptyState {
     }
 }
 
-function Convert-ToArray {
-    param($Value)
+function As-Array($Value) {
     if ($null -eq $Value) { return @() }
     return @($Value)
 }
 
 function Read-StateUnlocked {
-    if (-not (Test-Path -LiteralPath $DataFile)) {
-        return New-EmptyState
+    if (-not (Test-Path -LiteralPath $DataFile)) { return New-EmptyState }
+    $raw = [System.IO.File]::ReadAllText($DataFile, [System.Text.Encoding]::UTF8)
+    if ([string]::IsNullOrWhiteSpace($raw)) { return New-EmptyState }
+    $state = $raw | ConvertFrom-Json
+    if ($null -eq $state.guests) {
+        $state | Add-Member -NotePropertyName guests -NotePropertyValue @() -Force
     }
-
-    try {
-        $raw = [System.IO.File]::ReadAllText($DataFile, [System.Text.Encoding]::UTF8)
-        if ([string]::IsNullOrWhiteSpace($raw)) {
-            return New-EmptyState
-        }
-        $state = $raw | ConvertFrom-Json
-        if ($null -eq $state.guests) {
-            $state | Add-Member -NotePropertyName guests -NotePropertyValue @() -Force
-        }
-        return $state
-    } catch {
-        Write-Log "Data file read failed: $($_.Exception.Message)"
-        throw
-    }
+    return $state
 }
 
-function Write-StateUnlocked {
-    param($State)
-
+function Write-StateUnlocked($State) {
     $State.updatedAt = (Get-Date).ToUniversalTime().ToString('o')
-    $json = $State | ConvertTo-Json -Depth 12
     $tempFile = "$DataFile.tmp"
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
@@ -82,56 +57,39 @@ function Write-StateUnlocked {
         }
     }
 
+    $json = $State | ConvertTo-Json -Depth 12
     [System.IO.File]::WriteAllText($tempFile, $json, $utf8NoBom)
     Move-Item -LiteralPath $tempFile -Destination $DataFile -Force
 }
 
-function Use-DataLock {
-    param([scriptblock]$Action)
-
+function Invoke-WithDataLock([scriptblock]$Action) {
     $createdNew = $false
     $mutex = New-Object System.Threading.Mutex($false, 'Global\DaysInnAvenNoRentDataMutex', [ref]$createdNew)
     $locked = $false
     try {
         $locked = $mutex.WaitOne([TimeSpan]::FromSeconds(10))
-        if (-not $locked) {
-            throw 'The shared no-rent list is temporarily busy. Please try again.'
-        }
-        & $Action
+        if (-not $locked) { throw 'The shared no-rent list is temporarily busy. Please try again.' }
+        return (& $Action)
     } finally {
-        if ($locked) {
-            try { $mutex.ReleaseMutex() | Out-Null } catch {}
-        }
+        if ($locked) { try { $mutex.ReleaseMutex() | Out-Null } catch {} }
         $mutex.Dispose()
     }
 }
 
-function Get-RequestBody {
-    param([System.Net.HttpListenerRequest]$Request)
-
+function Read-RequestBody([System.Net.HttpListenerRequest]$Request) {
     $reader = New-Object System.IO.StreamReader($Request.InputStream, $Request.ContentEncoding)
-    try {
-        $text = $reader.ReadToEnd()
-    } finally {
-        $reader.Dispose()
-    }
-
+    try { $text = $reader.ReadToEnd() } finally { $reader.Dispose() }
     if ([string]::IsNullOrWhiteSpace($text)) { return $null }
-    return $text | ConvertFrom-Json
+    return ($text | ConvertFrom-Json)
 }
 
-function Limit-Text {
-    param($Value, [int]$MaximumLength)
+function Limit-Text($Value, [int]$MaximumLength) {
     $text = ([string]$Value).Trim()
-    if ($text.Length -gt $MaximumLength) {
-        $text = $text.Substring(0, $MaximumLength)
-    }
+    if ($text.Length -gt $MaximumLength) { return $text.Substring(0, $MaximumLength) }
     return $text
 }
 
-function New-CleanGuest {
-    param($InputGuest, $ExistingGuest)
-
+function Convert-ToCleanGuest($InputGuest, $ExistingGuest) {
     if ($null -eq $InputGuest) { throw 'Guest information is required.' }
 
     $firstName = Limit-Text $InputGuest.firstName 80
@@ -141,19 +99,14 @@ function New-CleanGuest {
     }
 
     $now = (Get-Date).ToUniversalTime().ToString('o')
-    $id = $null
+    $id = ''
     $createdAt = $now
-
     if ($null -ne $ExistingGuest) {
         $id = Limit-Text $ExistingGuest.id 100
         $createdAt = Limit-Text $ExistingGuest.createdAt 60
     }
-    if ([string]::IsNullOrWhiteSpace($id)) {
-        $id = [Guid]::NewGuid().ToString()
-    }
-    if ([string]::IsNullOrWhiteSpace($createdAt)) {
-        $createdAt = $now
-    }
+    if ([string]::IsNullOrWhiteSpace($id)) { $id = [Guid]::NewGuid().ToString() }
+    if ([string]::IsNullOrWhiteSpace($createdAt)) { $createdAt = $now }
 
     return [ordered]@{
         id = $id
@@ -166,70 +119,49 @@ function New-CleanGuest {
     }
 }
 
-function Set-CorsHeaders {
-    param([System.Net.HttpListenerContext]$Context)
-
+function Set-CorsHeaders([System.Net.HttpListenerContext]$Context) {
     $origin = [string]$Context.Request.Headers['Origin']
     if (-not [string]::IsNullOrWhiteSpace($origin)) {
-        if ($origin -notmatch '^chrome-extension://[a-p]{32}$') {
-            return $false
-        }
+        if ($origin -notmatch '^chrome-extension://[a-p]{32}$') { return $false }
         $Context.Response.Headers['Access-Control-Allow-Origin'] = $origin
         $Context.Response.Headers['Vary'] = 'Origin'
     }
-
     $Context.Response.Headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
     $Context.Response.Headers['Access-Control-Allow-Headers'] = 'Content-Type, X-Aven-NoRent-Client'
     $Context.Response.Headers['Cache-Control'] = 'no-store'
     return $true
 }
 
-function Send-Json {
-    param(
-        [System.Net.HttpListenerContext]$Context,
-        [int]$StatusCode,
-        $Body
-    )
-
+function Send-Json([System.Net.HttpListenerContext]$Context, [int]$StatusCode, $Body) {
     $json = $Body | ConvertTo-Json -Depth 12 -Compress
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
     $Context.Response.StatusCode = $StatusCode
     $Context.Response.ContentType = 'application/json; charset=utf-8'
     $Context.Response.ContentEncoding = [System.Text.Encoding]::UTF8
     $Context.Response.ContentLength64 = $bytes.Length
-    try {
-        $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length)
-    } finally {
+    try { $Context.Response.OutputStream.Write($bytes, 0, $bytes.Length) }
+    finally {
         $Context.Response.OutputStream.Close()
         $Context.Response.Close()
     }
 }
 
-function Send-Error {
-    param(
-        [System.Net.HttpListenerContext]$Context,
-        [int]$StatusCode,
-        [string]$Message
-    )
+function Send-Error([System.Net.HttpListenerContext]$Context, [int]$StatusCode, [string]$Message) {
     Send-Json $Context $StatusCode ([ordered]@{ ok = $false; error = $Message })
 }
 
-function Get-GuestIdFromPath {
-    param([string]$Path)
-    if ($Path -match '^/guests/([^/]+)$') {
-        return [Uri]::UnescapeDataString($Matches[1])
-    }
+function Get-GuestId([string]$Path) {
+    if ($Path -match '^/guests/([^/]+)$') { return [Uri]::UnescapeDataString($Matches[1]) }
     return $null
 }
 
-Ensure-Directories
+New-Item -ItemType Directory -Force -Path $DataDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $BackupDirectory | Out-Null
 
 if (-not (Test-Path -LiteralPath $DataFile)) {
-    Use-DataLock {
-        if (-not (Test-Path -LiteralPath $DataFile)) {
-            Write-StateUnlocked (New-EmptyState)
-        }
-    }
+    Invoke-WithDataLock {
+        if (-not (Test-Path -LiteralPath $DataFile)) { Write-StateUnlocked (New-EmptyState) }
+    } | Out-Null
 }
 
 $listener = New-Object System.Net.HttpListener
@@ -240,7 +172,6 @@ Write-Log "Shared service $ServiceVersion started on $Prefix"
 try {
     while ($listener.IsListening) {
         $context = $listener.GetContext()
-
         try {
             if (-not (Set-CorsHeaders $context)) {
                 Send-Error $context 403 'This local service accepts requests only from a Chrome extension.'
@@ -258,56 +189,53 @@ try {
             if ([string]::IsNullOrWhiteSpace($path)) { $path = '/' }
 
             if ($method -eq 'GET' -and $path -eq '/health') {
-                $state = $null
-                Use-DataLock { $script:state = Read-StateUnlocked }
+                $state = Invoke-WithDataLock { Read-StateUnlocked }
                 Send-Json $context 200 ([ordered]@{
                     ok = $true
                     serviceVersion = $ServiceVersion
-                    guestCount = (Convert-ToArray $state.guests).Count
+                    guestCount = (As-Array $state.guests).Count
                     updatedAt = [string]$state.updatedAt
                 })
                 continue
             }
 
             if ($method -eq 'GET' -and $path -eq '/guests') {
-                $state = $null
-                Use-DataLock { $script:state = Read-StateUnlocked }
+                $state = Invoke-WithDataLock { Read-StateUnlocked }
                 Send-Json $context 200 ([ordered]@{
                     ok = $true
                     serviceVersion = $ServiceVersion
                     updatedAt = [string]$state.updatedAt
-                    guests = Convert-ToArray $state.guests
+                    guests = @(As-Array $state.guests)
                 })
                 continue
             }
 
             if ($method -eq 'POST' -and $path -eq '/guests') {
-                $body = Get-RequestBody $context.Request
-                $created = $null
-                Use-DataLock {
+                $body = Read-RequestBody $context.Request
+                $created = Invoke-WithDataLock {
                     $state = Read-StateUnlocked
-                    $created = New-CleanGuest $body $null
-                    $state.guests = @((Convert-ToArray $state.guests) + $created)
+                    $newGuest = Convert-ToCleanGuest $body $null
+                    $state.guests = @((As-Array $state.guests) + $newGuest)
                     Write-StateUnlocked $state
-                    $script:created = $created
+                    return $newGuest
                 }
                 Send-Json $context 201 ([ordered]@{ ok = $true; guest = $created })
                 continue
             }
 
-            $guestId = Get-GuestIdFromPath $path
+            $guestId = Get-GuestId $path
 
             if ($method -eq 'PUT' -and $null -ne $guestId) {
-                $body = Get-RequestBody $context.Request
-                $updated = $null
-                $found = $false
-                Use-DataLock {
+                $body = Read-RequestBody $context.Request
+                $result = Invoke-WithDataLock {
                     $state = Read-StateUnlocked
+                    $found = $false
+                    $updatedGuest = $null
                     $newGuests = @()
-                    foreach ($guest in (Convert-ToArray $state.guests)) {
+                    foreach ($guest in (As-Array $state.guests)) {
                         if ([string]$guest.id -eq $guestId) {
-                            $updated = New-CleanGuest $body $guest
-                            $newGuests += $updated
+                            $updatedGuest = Convert-ToCleanGuest $body $guest
+                            $newGuests += $updatedGuest
                             $found = $true
                         } else {
                             $newGuests += $guest
@@ -317,84 +245,61 @@ try {
                         $state.guests = $newGuests
                         Write-StateUnlocked $state
                     }
-                    $script:updated = $updated
-                    $script:found = $found
+                    return [pscustomobject]@{ found = $found; guest = $updatedGuest }
                 }
-                if (-not $found) {
-                    Send-Error $context 404 'Guest entry was not found.'
-                } else {
-                    Send-Json $context 200 ([ordered]@{ ok = $true; guest = $updated })
-                }
+                if (-not $result.found) { Send-Error $context 404 'Guest entry was not found.' }
+                else { Send-Json $context 200 ([ordered]@{ ok = $true; guest = $result.guest }) }
                 continue
             }
 
             if ($method -eq 'DELETE' -and $null -ne $guestId) {
-                $found = $false
-                Use-DataLock {
+                $result = Invoke-WithDataLock {
                     $state = Read-StateUnlocked
+                    $found = $false
                     $remaining = @()
-                    foreach ($guest in (Convert-ToArray $state.guests)) {
-                        if ([string]$guest.id -eq $guestId) {
-                            $found = $true
-                        } else {
-                            $remaining += $guest
-                        }
+                    foreach ($guest in (As-Array $state.guests)) {
+                        if ([string]$guest.id -eq $guestId) { $found = $true }
+                        else { $remaining += $guest }
                     }
                     if ($found) {
                         $state.guests = $remaining
                         Write-StateUnlocked $state
                     }
-                    $script:found = $found
+                    return [pscustomobject]@{ found = $found }
                 }
-                if (-not $found) {
-                    Send-Error $context 404 'Guest entry was not found.'
-                } else {
-                    Send-Json $context 200 ([ordered]@{ ok = $true })
-                }
+                if (-not $result.found) { Send-Error $context 404 'Guest entry was not found.' }
+                else { Send-Json $context 200 ([ordered]@{ ok = $true }) }
                 continue
             }
 
             if ($method -eq 'POST' -and $path -eq '/replace') {
-                $body = Get-RequestBody $context.Request
-                $sourceGuests = @()
-                if ($null -ne $body -and $null -ne $body.guests) {
-                    $sourceGuests = Convert-ToArray $body.guests
-                } elseif ($body -is [System.Array]) {
-                    $sourceGuests = Convert-ToArray $body
-                } else {
-                    throw 'A guests array is required.'
-                }
+                $body = Read-RequestBody $context.Request
+                if ($null -ne $body -and $null -ne $body.guests) { $sourceGuests = @(As-Array $body.guests) }
+                elseif ($body -is [System.Array]) { $sourceGuests = @(As-Array $body) }
+                else { throw 'A guests array is required.' }
 
-                $cleanedGuests = @()
+                $cleaned = @()
                 foreach ($guest in $sourceGuests) {
                     $existing = $null
-                    if (-not [string]::IsNullOrWhiteSpace([string]$guest.id)) {
-                        $existing = $guest
-                    }
-                    $cleanedGuests += New-CleanGuest $guest $existing
+                    if (-not [string]::IsNullOrWhiteSpace([string]$guest.id)) { $existing = $guest }
+                    $cleaned += Convert-ToCleanGuest $guest $existing
                 }
 
-                Use-DataLock {
+                Invoke-WithDataLock {
                     $state = New-EmptyState
-                    $state.guests = $cleanedGuests
+                    $state.guests = $cleaned
                     Write-StateUnlocked $state
-                }
+                } | Out-Null
 
-                Send-Json $context 200 ([ordered]@{
-                    ok = $true
-                    guestCount = $cleanedGuests.Count
-                })
+                Send-Json $context 200 ([ordered]@{ ok = $true; guestCount = $cleaned.Count })
                 continue
             }
 
             Send-Error $context 404 'Unknown shared-service endpoint.'
         } catch {
             Write-Log "Request failed: $($_.Exception.Message)"
-            try {
-                Send-Error $context 500 $_.Exception.Message
-            } catch {
-                try { $context.Response.Abort() } catch {}
-            }
+            try { Send-Error $context 500 $_.Exception.Message }
+            catch { try { $context.Response.Abort() } catch {} }
         }
     }
 } finally {
