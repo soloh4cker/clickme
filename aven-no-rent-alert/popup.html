@@ -18,7 +18,8 @@
 
   <main>
     <section class="panel diagnostic-panel">
-      <div class="title-row"><h2>Current Aven page test</h2></div>
+      <div class="title-row"><h2>System status</h2></div>
+      <p id="sharedStorageStatus" class="diagnostic-line">Checking shared storage...</p>
       <p id="pageDomain" class="diagnostic-line">Checking the current tab...</p>
       <p id="detectedGuest" class="diagnostic-line"></p>
       <p id="matchResult" class="diagnostic-line"></p>
@@ -40,12 +41,12 @@
         </div>
         <label>Reason<textarea id="reason" rows="3" maxlength="500"></textarea></label>
         <label>Past confirmation number<input id="confirmationNumber" maxlength="100"></label>
-        <button id="saveButton" class="primary" type="submit">Add to no-rent list</button>
+        <button id="saveButton" class="primary" type="submit">Add to shared no-rent list</button>
       </form>
     </section>
 
     <section class="panel">
-      <div class="title-row"><h2>Saved guests <span id="count">0</span></h2></div>
+      <div class="title-row"><h2>Shared guests <span id="count">0</span></h2></div>
       <input id="search" type="search" placeholder="Search name, reason, or confirmation #">
       <div id="empty" class="empty">No guests have been added yet.</div>
       <div id="list" class="list"></div>
@@ -57,9 +58,9 @@
       <input id="importFile" type="file" accept="application/json,.json" hidden>
     </div>
     <p id="status" class="status"></p>
-    <p class="privacy">Version 1.2 stores the list only in this Chrome profile. Separate Windows logins do not share this list.</p>
+    <p class="privacy">Version 2 uses one shared database on this front-desk computer. Every Windows login sees the same list when the shared service is online.</p>
   </main>
 
-  <script src="popup.js"></script>
+  <script src="popup-v2.js"></script>
 </body>
 </html>

@@ -1,0 +1,88 @@
+name: Test Aven Shared Storage
+
+on:
+  push:
+    branches:
+      - aven-no-rent-alert-v1
+  workflow_dispatch:
+
+jobs:
+  test-windows-service-script:
+    runs-on: windows-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem shared-service -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Host "Parse errors in $($_.Name)" -ForegroundColor Red
+              $errors | ForEach-Object { Write-Host $_.Message }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Start service and test API
+        shell: powershell
+        run: |
+          $server = Resolve-Path 'shared-service/AvenNoRentServer.ps1'
+          $process = Start-Process powershell.exe -PassThru -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', "`"$server`"",
+            '-Port', '17831'
+          )
+          try {
+            $ready = $false
+            1..20 | ForEach-Object {
+              if (-not $ready) {
+                Start-Sleep -Milliseconds 500
+                try {
+                  $health = Invoke-RestMethod 'http://127.0.0.1:17831/health' -TimeoutSec 2
+                  $ready = $health.ok
+                } catch {}
+              }
+            }
+            if (-not $ready) { throw 'Service did not start.' }
+
+            $created = Invoke-RestMethod 'http://127.0.0.1:17831/guests' -Method Post -ContentType 'application/json' -Body (@{
+              firstName = 'Andrew'
+              lastName = 'Forbes'
+              reason = 'Automated test'
+              confirmationNumber = 'TEST123'
+            } | ConvertTo-Json)
+            if (-not $created.ok -or -not $created.guest.id) { throw 'Create failed.' }
+
+            $list = Invoke-RestMethod 'http://127.0.0.1:17831/guests'
+            if ($list.guests.Count -ne 1) { throw 'List did not contain one guest.' }
+
+            $updated = Invoke-RestMethod "http://127.0.0.1:17831/guests/$($created.guest.id)" -Method Put -ContentType 'application/json' -Body (@{
+              firstName = 'Andrew'
+              lastName = 'Forbes'
+              reason = 'Updated automated test'
+              confirmationNumber = 'TEST456'
+            } | ConvertTo-Json)
+            if ($updated.guest.confirmationNumber -ne 'TEST456') { throw 'Update failed.' }
+
+            $deleted = Invoke-RestMethod "http://127.0.0.1:17831/guests/$($created.guest.id)" -Method Delete
+            if (-not $deleted.ok) { throw 'Delete failed.' }
+
+            $finalList = Invoke-RestMethod 'http://127.0.0.1:17831/guests'
+            if ($finalList.guests.Count -ne 0) { throw 'Delete did not clear the list.' }
+          } finally {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Validate extension manifest JSON
+        shell: powershell
+        run: |
+          $manifest = Get-Content 'aven-no-rent-alert/manifest.json' -Raw | ConvertFrom-Json
+          if ($manifest.version -ne '2.0.0') { throw 'Unexpected manifest version.' }
+          if ($manifest.host_permissions -notcontains 'http://127.0.0.1:17831/*') { throw 'Shared service permission missing.' }
